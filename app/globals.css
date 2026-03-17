@@ -144,6 +144,11 @@ button:disabled {
   font-size: 0.85rem;
 }
 
+.typing-indicator {
+  color: #00a884 !important;
+  font-weight: 700;
+}
+
 .header-right {
   display: flex;
   flex-direction: column;

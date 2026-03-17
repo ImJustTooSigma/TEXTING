@@ -15,14 +15,17 @@ type ChatMessage = {
 };
 
 type PresenceMap = Record<Role, number>;
+type TypingMap = Record<Role, number>;
 
 const MESSAGE_LIMIT = 1000;
 const REPLY_PREVIEW_LIMIT = 120;
 const ONLINE_WINDOW_MS = 8000;
+const TYPING_WINDOW_MS = 4000;
 
 const messageStore = globalThis as typeof globalThis & {
   __privateOneChat?: ChatMessage[];
   __privatePresence?: PresenceMap;
+  __privateTyping?: TypingMap;
 };
 
 function getMessages() {
@@ -60,12 +63,31 @@ function getPresence() {
   return messageStore.__privatePresence;
 }
 
+function getTyping() {
+  if (!messageStore.__privateTyping) {
+    messageStore.__privateTyping = {
+      me: 0,
+      friend: 0,
+    };
+  }
+  return messageStore.__privateTyping;
+}
+
 function getOnlineMap() {
   const now = Date.now();
   const presence = getPresence();
   return {
     me: now - presence.me <= ONLINE_WINDOW_MS,
     friend: now - presence.friend <= ONLINE_WINDOW_MS,
+  };
+}
+
+function getTypingMap() {
+  const now = Date.now();
+  const typing = getTyping();
+  return {
+    me: now - typing.me <= TYPING_WINDOW_MS,
+    friend: now - typing.friend <= TYPING_WINDOW_MS,
   };
 }
 
@@ -88,7 +110,11 @@ export async function GET(request: Request) {
     }
   }
 
-  return NextResponse.json({ messages: getMessages(), online: getOnlineMap() });
+  return NextResponse.json({
+    messages: getMessages(),
+    online: getOnlineMap(),
+    typing: getTypingMap(),
+  });
 }
 
 export async function POST(request: Request) {
@@ -141,8 +167,13 @@ export async function POST(request: Request) {
   messages.push(next);
   messageStore.__privateOneChat = messages.slice(-250);
   getPresence()[sender] = Date.now();
+  getTyping()[sender] = 0;
 
-  return NextResponse.json({ messages: getMessages(), online: getOnlineMap() });
+  return NextResponse.json({
+    messages: getMessages(),
+    online: getOnlineMap(),
+    typing: getTypingMap(),
+  });
 }
 
 export async function DELETE(request: Request) {
@@ -152,7 +183,7 @@ export async function DELETE(request: Request) {
 
   if (clear === "true") {
     messageStore.__privateOneChat = [];
-    return NextResponse.json({ messages: [], online: getOnlineMap() });
+    return NextResponse.json({ messages: [], online: getOnlineMap(), typing: getTypingMap() });
   }
 
   if (!id) {
@@ -165,5 +196,31 @@ export async function DELETE(request: Request) {
   }
 
   messageStore.__privateOneChat = getMessages().filter((message) => message.id !== id);
-  return NextResponse.json({ messages: getMessages(), online: getOnlineMap() });
+  return NextResponse.json({
+    messages: getMessages(),
+    online: getOnlineMap(),
+    typing: getTypingMap(),
+  });
+}
+
+export async function PATCH(request: Request) {
+  const body = (await request.json()) as { role?: Role; isTyping?: boolean };
+  const role = body.role;
+  if (role !== "me" && role !== "friend") {
+    return NextResponse.json(
+      { error: "Invalid role" },
+      {
+        status: 400,
+      },
+    );
+  }
+
+  getPresence()[role] = Date.now();
+  getTyping()[role] = body.isTyping ? Date.now() : 0;
+
+  return NextResponse.json({
+    messages: getMessages(),
+    online: getOnlineMap(),
+    typing: getTypingMap(),
+  });
 }

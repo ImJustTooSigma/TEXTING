@@ -25,6 +25,7 @@ type ChatMessage = {
 };
 
 type OnlineMap = Record<Role, boolean>;
+type TypingMap = Record<Role, boolean>;
 
 const LOGIN_STORAGE_KEY = "private-chat-role";
 const NAME_BY_ROLE: Record<Role, string> = {
@@ -58,6 +59,7 @@ export default function Home() {
   const [loginError, setLoginError] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [online, setOnline] = useState<OnlineMap>({ me: false, friend: false });
+  const [typing, setTyping] = useState<TypingMap>({ me: false, friend: false });
   const [draft, setDraft] = useState("");
   const [pendingImage, setPendingImage] = useState<string | null>(null);
   const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
@@ -78,6 +80,7 @@ export default function Home() {
   } | null>(null);
   const SWIPE_REPLY_TRIGGER = 72;
   const SWIPE_MAX_OFFSET = 98;
+  const typingSentRef = useRef(false);
 
   useEffect(() => {
     const storedRole = window.localStorage.getItem(LOGIN_STORAGE_KEY);
@@ -91,14 +94,33 @@ export default function Home() {
       return;
     }
 
+    let isAlive = true;
     const refresh = async () => {
-      const response = await fetch(`/api/chat?viewer=${role}`, { cache: "no-store" });
-      const data = (await response.json()) as {
-        messages: ChatMessage[];
-        online: OnlineMap;
-      };
-      setMessages(data.messages);
-      setOnline(data.online);
+      try {
+        const response = await fetch(`/api/chat?viewer=${role}`, { cache: "no-store" });
+        if (!response.ok) {
+          return;
+        }
+        const data = (await response.json()) as {
+          messages?: ChatMessage[];
+          online?: OnlineMap;
+          typing?: TypingMap;
+        };
+        if (!isAlive) {
+          return;
+        }
+        if (Array.isArray(data.messages)) {
+          setMessages(data.messages);
+        }
+        if (data.online) {
+          setOnline(data.online);
+        }
+        if (data.typing) {
+          setTyping(data.typing);
+        }
+      } catch {
+        // Keep existing UI state on transient sync errors.
+      }
     };
 
     void refresh();
@@ -108,9 +130,57 @@ export default function Home() {
     }, 1500);
 
     return () => {
+      isAlive = false;
       window.clearInterval(interval);
     };
   }, [role]);
+
+  useEffect(() => {
+    if (!role) {
+      return;
+    }
+
+    const draftHasText = draft.trim().length > 0;
+    const postTyping = async (isTyping: boolean) => {
+      try {
+        const response = await fetch("/api/chat", {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            role,
+            isTyping,
+          }),
+        });
+        if (!response.ok) {
+          return;
+        }
+        const data = (await response.json()) as { typing?: TypingMap };
+        if (data.typing) {
+          setTyping(data.typing);
+        }
+      } catch {
+        // Ignore typing heartbeat failure.
+      }
+    };
+
+    if (draftHasText) {
+      typingSentRef.current = true;
+      void postTyping(true);
+      const interval = window.setInterval(() => {
+        void postTyping(true);
+      }, 2500);
+      return () => {
+        window.clearInterval(interval);
+      };
+    }
+
+    if (typingSentRef.current) {
+      typingSentRef.current = false;
+      void postTyping(false);
+    }
+  }, [role, draft]);
 
   useEffect(() => {
     if (!role || messages.length === 0) {
@@ -209,9 +279,13 @@ export default function Home() {
         const data = (await response.json()) as {
           messages: ChatMessage[];
           online: OnlineMap;
+          typing?: TypingMap;
         };
         setMessages(data.messages);
         setOnline(data.online);
+        if (data.typing) {
+          setTyping(data.typing);
+        }
       }
     } finally {
       setSubmitting(false);
@@ -261,9 +335,16 @@ export default function Home() {
     if (!response.ok) {
       return;
     }
-    const data = (await response.json()) as { messages: ChatMessage[]; online: OnlineMap };
+    const data = (await response.json()) as {
+      messages: ChatMessage[];
+      online: OnlineMap;
+      typing?: TypingMap;
+    };
     setMessages(data.messages);
     setOnline(data.online);
+    if (data.typing) {
+      setTyping(data.typing);
+    }
   };
 
   const clearChat = async () => {
@@ -278,9 +359,16 @@ export default function Home() {
     if (!response.ok) {
       return;
     }
-    const data = (await response.json()) as { messages: ChatMessage[]; online: OnlineMap };
+    const data = (await response.json()) as {
+      messages: ChatMessage[];
+      online: OnlineMap;
+      typing?: TypingMap;
+    };
     setMessages(data.messages);
     setOnline(data.online);
+    if (data.typing) {
+      setTyping(data.typing);
+    }
     knownIdsRef.current = new Set();
     firstLoadRef.current = true;
   };
@@ -334,10 +422,12 @@ export default function Home() {
   };
 
   const logout = () => {
+    typingSentRef.current = false;
     window.localStorage.removeItem(LOGIN_STORAGE_KEY);
     setRole(null);
     setMessages([]);
     setOnline({ me: false, friend: false });
+    setTyping({ me: false, friend: false });
     setReplyTarget(null);
     knownIdsRef.current = new Set();
     firstLoadRef.current = true;
@@ -366,6 +456,7 @@ export default function Home() {
   }
 
   const otherRole: Role = role === "me" ? "friend" : "me";
+  const otherTyping = typing[otherRole] && online[otherRole];
 
   return (
     <main className="chat-screen">
@@ -375,7 +466,9 @@ export default function Home() {
             <div className="chat-avatar">{NAME_BY_ROLE[otherRole].charAt(0)}</div>
             <div>
               <h1>{NAME_BY_ROLE[otherRole]}</h1>
-              <p>Swipe right on any message to reply.</p>
+              <p className={otherTyping ? "typing-indicator" : ""}>
+                {otherTyping ? "typing..." : "Swipe right on any message to reply."}
+              </p>
             </div>
           </div>
           <div className="header-right">
